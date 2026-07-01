@@ -1,72 +1,83 @@
-from machine import Pin
+from machine import Pin, UART
 import neopixel
-from utime import sleep_ms
 
 NUM_LEDS = 88
-DATA_PIN = Pin(0)
+LED_PIN = Pin(0)
+MIDI_UART = UART(0, baudrate=31250, rx=Pin(1))
 
-np = neopixel.NeoPixel(DATA_PIN, NUM_LEDS)
+np = neopixel.NeoPixel(LED_PIN, NUM_LEDS)
+
+NOTE_ON = 0x90
+NOTE_OFF = 0x80
+FIRST_NOTE = 21
+LAST_NOTE = 108
 
 
-def clear():
-    for i in range(NUM_LEDS):
-        np[i] = (0, 0, 0)
-    np.write()
+def midi_read(n):
+    while MIDI_UART.any() < n:
+        pass
+    return MIDI_UART.read(n)
 
 
-def test_sequential_on():
-    print("Sequential ON: LED 0 -> 87")
-    for i in range(NUM_LEDS):
-        np[i] = (255, 255, 255)
+def data_length(status):
+    cmd = status & 0xF0
+    if cmd == 0xC0 or cmd == 0xD0:
+        return 1
+    return 2
+
+
+def set_led(index, on):
+    if 0 <= index < NUM_LEDS:
+        np[index] = (255, 255, 255) if on else (0, 0, 0)
         np.write()
-        sleep_ms(30)
-    print("Sequential ON done.")
 
 
-def test_sequential_off():
-    print("Sequential OFF: LED 87 -> 0")
-    for i in range(NUM_LEDS - 1, -1, -1):
-        np[i] = (0, 0, 0)
-        np.write()
-        sleep_ms(30)
-    print("Sequential OFF done.")
+def handle_note_on(note, velocity):
+    if FIRST_NOTE <= note <= LAST_NOTE:
+        set_led(note - FIRST_NOTE, velocity > 0)
 
 
-def test_color_cycle():
-    colors = [
-        ("Red", (255, 0, 0)),
-        ("Green", (0, 255, 0)),
-        ("Blue", (0, 0, 255)),
-        ("White", (255, 255, 255)),
-    ]
-    for name, color in colors:
-        print(f"Color: {name}")
-        for i in range(NUM_LEDS):
-            np[i] = color
-        np.write()
-        sleep_ms(500)
-        clear()
-        sleep_ms(200)
+def handle_note_off(note, velocity):
+    if FIRST_NOTE <= note <= LAST_NOTE:
+        set_led(note - FIRST_NOTE, False)
 
 
 def main():
-    print("=== LED Strip Hardware Validation ===")
-    print(f"NUM_LEDS: {NUM_LEDS}")
-    print(f"DATA_PIN: GP0")
+    print("MIDI->LED firmware started")
+    print(f"LEDs: {NUM_LEDS}, Note range: {FIRST_NOTE}-{LAST_NOTE}")
+    running_status = 0
 
-    clear()
-    sleep_ms(500)
+    while True:
+        if MIDI_UART.any() == 0:
+            continue
 
-    test_sequential_on()
-    sleep_ms(500)
+        byte = MIDI_UART.read(1)[0]
 
-    test_sequential_off()
-    sleep_ms(500)
+        if byte >= 0x80:
+            running_status = byte
+            cmd = byte & 0xF0
 
-    test_color_cycle()
+            if cmd == NOTE_ON:
+                note, velocity = midi_read(2)
+                handle_note_on(note, velocity)
+            elif cmd == NOTE_OFF:
+                note, velocity = midi_read(2)
+                handle_note_off(note, velocity)
+            else:
+                midi_read(data_length(byte))
+        else:
+            if running_status == 0:
+                continue
+            cmd = running_status & 0xF0
 
-    clear()
-    print("=== Test Complete ===")
+            if cmd == NOTE_ON:
+                velocity = midi_read(1)[0]
+                handle_note_on(byte, velocity)
+            elif cmd == NOTE_OFF:
+                velocity = midi_read(1)[0]
+                handle_note_off(byte, velocity)
+            else:
+                midi_read(data_length(running_status) - 1)
 
 
 main()
